@@ -34,19 +34,18 @@ def process_a(queue,cx,cy):
     
 async def process_in_opencv(track):
     frame_num = 1
+    q = multiprocessing.Queue()
+    cx = multiprocessing.Value('d', 0.0)
+    cy = multiprocessing.Value('d', 0.0)
+    p = multiprocessing.Process(target = process_a,args=(q,cx,cy))
     while True:
         try:
             frame = await track.recv()
             image = frame.to_ndarray(format='rgb24')
             print("recieved frame",frame_num)
             cv2.imshow("Output frame", image)
-            q = multiprocessing.Queue()
-            cx = multiprocessing.Value('d', 0.0)
-            cy = multiprocessing.Value('d', 0.0)
-            p = multiprocessing.Process(target = process_a,args=(q,cx,cy))
             q.put(image)
-            p.start()
-            p.join()
+            p.run()
             print("cx,cy : ",cx.value,cy.value)
             frame_num = frame_num + 1
             cv2.waitKey(1) 
@@ -62,46 +61,29 @@ class ClientReciever:
         self.__tracks = {}
 
     def addTrack(self, track):
-        """
-        Add a track whose media should be discarded.
-
-        :param track: A :class:`aiortc.MediaStreamTrack`.
-        """
         if track not in self.__tracks:
             self.__tracks[track] = None
 
     async def start(self):
-        """
-        Start discarding media.
-        """
-        
         for track, task in self.__tracks.items():
             if task is None:
                 self.__tracks[track] = asyncio.ensure_future(process_in_opencv(track))
 
     async def stop(self):
-        """
-        Stop discarding media.
-        """
         for task in self.__tracks.values():
             if task is not None:
                 task.cancel()
         self.__tracks = {}
 
-async def run(pc, recorder, signaling, role):
+async def run(pc, recorder, signaling):
     @pc.on("track")
     def on_track(track):
         print("Receiving %s" % track.kind)
         recorder.addTrack(track)
-
+    
     # connect signaling
     await signaling.connect()
-
-    if role == "offer":
-        # send offer
-        await pc.setLocalDescription(await pc.createOffer())
-        await signaling.send(pc.localDescription)
-
+    
     # consume signaling
     while True:
         obj = await signaling.receive()
@@ -110,11 +92,8 @@ async def run(pc, recorder, signaling, role):
             await recorder.start()
 
             if obj.type == "offer":
-                # send answer
                 await pc.setLocalDescription(await pc.createAnswer())
                 await signaling.send(pc.localDescription)
-        elif isinstance(obj, RTCIceCandidate):
-            await pc.addIceCandidate(obj)
         elif obj is BYE:
             print("Exiting")
             break
@@ -130,14 +109,7 @@ if __name__ == "__main__":
     # run event loop
     loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(
-            run(
-                pc=pc,
-                recorder=recorder,
-                signaling=signaling,
-                role="answer",
-            )
-        )
+        loop.run_until_complete(run(pc=pc,recorder=recorder,signaling=signaling))
     except KeyboardInterrupt:
         pass
     finally:
