@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import logging
 import math
-
+import multiprocessing
 import cv2
 import numpy
 from av import VideoFrame
@@ -17,19 +17,42 @@ from aiortc import (
 from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder
 from aiortc.contrib.signaling import BYE, add_signaling_arguments, create_signaling, TcpSocketSignaling
 
-frame_num = 0
+def process_a(queue,cx,cy):
+    image = queue.get()
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask_frame = cv2.inRange(image, (55, 10, 10),(65, 255, 255))
+    contours, hierarchy = cv2.findContours(mask_frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours = sorted(contours, key=cv2.contourArea)
+    M = cv2.moments(contours[-1])
+    cv2.drawContours(mask_frame, contours, -1, (125, 125, 125), 2)
+    cX, cY = -1, -1
+    cX = int(M["m10"] / M["m00"])
+    cY = int(M["m01"] / M["m00"])
+    cv2.circle(mask_frame, (cX, cY), 7, (0, 0, 0), -1)
+    cx.value = cX
+    cy.value = cY
+    
 async def process_in_opencv(track):
+    frame_num = 1
     while True:
         try:
             frame = await track.recv()
-            array = frame.to_ndarray(format='rgb24')
-            cv2.imshow("Output frame", array)
-            print("recieved frame :",frame_num)
-            # frame_num = frame_num + 1
+            image = frame.to_ndarray(format='rgb24')
+            print("recieved frame",frame_num)
+            cv2.imshow("Output frame", image)
+            q = multiprocessing.Queue()
+            cx = multiprocessing.Value('d', 0.0)
+            cy = multiprocessing.Value('d', 0.0)
+            p = multiprocessing.Process(target = process_a,args=(q,cx,cy))
+            q.put(image)
+            p.start()
+            p.join()
+            print("cx,cy : ",cx.value,cy.value)
+            frame_num = frame_num + 1
             cv2.waitKey(1) 
         except MediaStreamError:
+            print("MediaStreamError : ",MediaStreamError)
             return
-
 
 class ClientReciever:
     """
@@ -54,7 +77,6 @@ class ClientReciever:
         
         for track, task in self.__tracks.items():
             if task is None:
-                print("type : ",type(track))
                 self.__tracks[track] = asyncio.ensure_future(process_in_opencv(track))
 
     async def stop(self):
