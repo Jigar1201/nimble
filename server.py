@@ -16,6 +16,13 @@ from aiortc import (
 from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder
 from aiortc.contrib.signaling import BYE, add_signaling_arguments, create_signaling, TcpSocketSignaling
 
+from utils import unpack_data
+
+frame_num = 5000
+center_x = 343
+center_y = 454
+
+frames = {}
 
 class BallVideoStreamTrack(VideoStreamTrack):
     """
@@ -23,7 +30,7 @@ class BallVideoStreamTrack(VideoStreamTrack):
     """
     def __init__(self):
         super().__init__()  
-        self.counter = 0
+        self.counter = 1
         self.height = 480
         self.width = 640
         
@@ -53,6 +60,9 @@ class BallVideoStreamTrack(VideoStreamTrack):
         frame = VideoFrame.from_ndarray(image, format="bgr24")
         frame.pts = pts
         frame.time_base = time_base
+        
+        global frames
+        frames[self.counter] = self.cx,self.cy
         self.counter += 1
         print("self.counter sender:",self.counter,self.cx,self.cy)
         time.sleep(1)
@@ -63,17 +73,60 @@ class BallVideoStreamTrack(VideoStreamTrack):
         data_bgr[:, :] = color
         return data_bgr
 
+time_start = None
+
+def current_stamp():
+    global time_start
+
+    if time_start is None:
+        time_start = time.time()
+        return 0
+    else:
+        return int((time.time() - time_start) * 1000000)
+    
+def channel_log(channel, t, message):
+    print("channel(%s) %s %s" % (channel.label, t, message))
+
+def channel_send(channel, message):
+    channel_log(channel, ">", message)
+    channel.send(message)
+
 
 async def run(pc, signaling):
     # connect signaling
     await signaling.connect()
+    
+    channel = pc.createDataChannel("chat")
+    channel_log(channel, "-", "created by local party")
+
+    async def send_pings():
+        while True:
+            channel_send(channel, "send %d" % current_stamp())
+            await asyncio.sleep(1)
+
+    @channel.on("open")
+    def on_open():
+        print("on open called")
+        asyncio.ensure_future(send_pings())
+
+    @channel.on("message")
+    def on_message(message):
+        channel_log(channel, "<", message)
+        
+        if isinstance(message, str) and message.startswith("recv"):
+            elapsed_ms = (current_stamp() - int(message[18:])) / 1000
+            ball_info = message[5:17]
+            print(ball_info)
+            print(" RTT %.2f ms" % elapsed_ms)
+            
+    
     await pc.setLocalDescription(await pc.createOffer())
     await signaling.send(pc.localDescription)
-    
+                
     # consume signaling
     while True:
         obj = await signaling.receive()
-        print(obj.type)
+        
         if isinstance(obj, RTCSessionDescription):
             await pc.setRemoteDescription(obj)
         elif obj is BYE:
